@@ -27,7 +27,7 @@ for i in range(len(df)):
     for idx in models_list:
         for temp in template_prompts:
             prompts.append(temp + '\n' + df.loc[i,'Article'])
-            chosens.append('Reference Summary')
+            chosens.append(df.loc[i,'Reference Summary'])
             rejecteds.append(df.loc[i,idx])
 
 
@@ -41,7 +41,7 @@ data = {
 #        "chosen": chosens[:100],
 #        "rejected": rejecteds[:100],
 #}
-#
+
 
 dataset = Dataset.from_dict(data)
 dataset = dataset.train_test_split(0.05)
@@ -127,7 +127,7 @@ class ScriptArguments:
 def get_stack_exchange_paired(
     data_dir: str = "data/rl",
     cache_dir: Optional[str] = None,
-    num_proc=24,
+    num_proc=128,
 ) -> Dataset:
     """Load the stack-exchange-paired dataset from Hugging Face and convert it to the necessary format.
 
@@ -192,7 +192,7 @@ if __name__ == "__main__":
     train_dataset = train_dataset.filter(
         lambda x: len(x["prompt"]) + len(x["chosen"]) <= script_args.max_length
         and len(x["prompt"]) + len(x["rejected"]) <= script_args.max_length,
-        num_proc=32,
+        num_proc=128,
     )
     print(train_dataset)
 
@@ -201,9 +201,9 @@ if __name__ == "__main__":
     eval_dataset = eval_dataset.filter(
         lambda x: len(x["prompt"]) + len(x["chosen"]) <= script_args.max_length
         and len(x["prompt"]) + len(x["rejected"]) <= script_args.max_length,
-        num_proc=32,
+        num_proc=128,
     )
-
+    print(train_dataset[0])
     print(eval_dataset)
     # 4. initialize training arguments:
     training_args = DPOConfig(
@@ -224,7 +224,7 @@ if __name__ == "__main__":
         optim=script_args.optimizer_type,
         bf16=True,
         beta=script_args.beta,
-        loss_type='sigmoid',
+        loss_type='ipo',
         remove_unused_columns=False,
         run_name="dpo_llama2",
         gradient_checkpointing_kwargs=dict(use_reentrant=script_args.gradient_checkpointing_use_reentrant),
