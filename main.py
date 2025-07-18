@@ -11,6 +11,10 @@ import pandas as pd
 
 from trl import DPOConfig, DPOTrainer
 
+
+tokenizer = AutoTokenizer.from_pretrained("unsloth/Llama-3.2-3B-Instruct")
+tokenizer.pad_token = tokenizer.eos_token
+
 df = pd.read_csv('generated_summaries_with_variants32.csv')
 
 prompts = []
@@ -23,10 +27,16 @@ template_prompts = [
     'From the following news article, extract the key points a reader should know:',
 ]
 models_list = ['Model 1 (llama-3.1-70b-versatile) Summary', 'Model 2 (gemma-9b-it) Summary', 'Model 3 (mixtral) Summary']
+system_message = {"role": "system", "content": "You are a helpful assistant that summarizes news articles."}
+system = tokenizer.apply_chat_template([system_message], tokenize=False)
+prompt_message = lambda x: {"role": "user", "content": x}
 for i in range(len(df)):
     for idx in models_list:
         for temp in template_prompts:
-            prompts.append(temp + '\n' + df.loc[i,'Article'])
+            #prompts.append(system_prm + temp + '\n' + df.loc[i,'Article'] + 'Summary:<|eot_id|>')
+            message = prompt_message(temp + '\n' + df.loc[i,'Article'] + 'Summary:\n\n')
+            prompt = tokenizer.apply_chat_template([message], tokenize=False, add_generation_prompt=True)
+            prompts.append(system + prompt)
             chosens.append(df.loc[i,'Reference Summary'])
             rejecteds.append(df.loc[i,idx])
 
@@ -65,13 +75,13 @@ class ScriptArguments:
         default="../sft/results/final_checkpoint",
         metadata={"help": "the location of the SFT model name or path"},
     )
-    learning_rate: Optional[float] = field(default=5e-4, metadata={"help": "optimizer learning rate"})
+    learning_rate: Optional[float] = field(default=1e-6, metadata={"help": "optimizer learning rate"})
     lr_scheduler_type: Optional[str] = field(default="cosine", metadata={"help": "the lr scheduler type"})
     warmup_steps: Optional[int] = field(default=100, metadata={"help": "the number of warmup steps"})
     weight_decay: Optional[float] = field(default=0.05, metadata={"help": "the weight decay"})
     optimizer_type: Optional[str] = field(default="paged_adamw_32bit", metadata={"help": "the optimizer type"})
 
-    per_device_train_batch_size: Optional[int] = field(default=16, metadata={"help": "train batch size per device"})
+    per_device_train_batch_size: Optional[int] = field(default=4, metadata={"help": "train batch size per device"})
     per_device_eval_batch_size: Optional[int] = field(default=1, metadata={"help": "eval batch size per device"})
     gradient_accumulation_steps: Optional[int] = field(
         default=4, metadata={"help": "the number of gradient accumulation steps"}
@@ -84,15 +94,15 @@ class ScriptArguments:
         default=False, metadata={"help": "whether to use reentrant for gradient checkpointing"}
     )
 
-    lora_alpha: Optional[float] = field(default=16, metadata={"help": "the lora alpha parameter"})
+    lora_alpha: Optional[float] = field(default=32, metadata={"help": "the lora alpha parameter"})
     lora_dropout: Optional[float] = field(default=0.05, metadata={"help": "the lora dropout parameter"})
-    lora_r: Optional[int] = field(default=8, metadata={"help": "the lora r parameter"})
+    lora_r: Optional[int] = field(default=16, metadata={"help": "the lora r parameter"})
 
     max_prompt_length: Optional[int] = field(default=8192, metadata={"help": "the maximum prompt length"})
     max_length: Optional[int] = field(default=8192, metadata={"help": "the maximum sequence length"})
-    max_steps: Optional[int] = field(default=5000, metadata={"help": "max number of training steps"})
+    max_steps: Optional[int] = field(default=10000, metadata={"help": "max number of training steps"})
     logging_steps: Optional[int] = field(default=10, metadata={"help": "the logging frequency"})
-    save_steps: Optional[int] = field(default=1000, metadata={"help": "the saving frequency"})
+    save_steps: Optional[int] = field(default=100, metadata={"help": "the saving frequency"})
     eval_steps: Optional[int] = field(default=1000, metadata={"help": "the evaluation frequency"})
 
     output_dir: Optional[str] = field(default="./results", metadata={"help": "the output directory"})
@@ -127,7 +137,7 @@ class ScriptArguments:
 def get_stack_exchange_paired(
     data_dir: str = "data/rl",
     cache_dir: Optional[str] = None,
-    num_proc=128,
+    num_proc=32,
 ) -> Dataset:
     """Load the stack-exchange-paired dataset from Hugging Face and convert it to the necessary format.
 
@@ -155,7 +165,6 @@ def get_stack_exchange_paired(
         return dataset['test']
 
 
-
 if __name__ == "__main__":
     parser = HfArgumentParser(ScriptArguments)
     script_args = parser.parse_args_into_dataclasses()[0]
@@ -173,7 +182,7 @@ if __name__ == "__main__":
         'unsloth/Llama-3.2-3B-Instruct',
         low_cpu_mem_usage=True,
         torch_dtype=torch_dtype,
-        load_in_4bit=script_args.load_in_4bit,
+        #load_in_4bit=script_args.load_in_4bit,
         device_map={"": Accelerator().local_process_index},
     )
     model.config.use_cache = False
@@ -184,15 +193,13 @@ if __name__ == "__main__":
             name for name, buffer in model.named_buffers() if buffer.dtype == torch.bool
         ]
 
-    tokenizer = AutoTokenizer.from_pretrained("unsloth/Llama-3.2-3B-Instruct")
-    tokenizer.pad_token = tokenizer.eos_token
 
     # 2. Load the Stack-exchange paired dataset
     train_dataset = get_stack_exchange_paired(data_dir="data/rl")
     train_dataset = train_dataset.filter(
         lambda x: len(x["prompt"]) + len(x["chosen"]) <= script_args.max_length
         and len(x["prompt"]) + len(x["rejected"]) <= script_args.max_length,
-        num_proc=128,
+        num_proc=32,
     )
     print(train_dataset)
 
@@ -201,7 +208,7 @@ if __name__ == "__main__":
     eval_dataset = eval_dataset.filter(
         lambda x: len(x["prompt"]) + len(x["chosen"]) <= script_args.max_length
         and len(x["prompt"]) + len(x["rejected"]) <= script_args.max_length,
-        num_proc=128,
+        num_proc=32,
     )
     print(train_dataset[0])
     print(eval_dataset)
@@ -224,7 +231,9 @@ if __name__ == "__main__":
         optim=script_args.optimizer_type,
         bf16=True,
         beta=script_args.beta,
-        loss_type='ipo',
+        loss_type='sigmoid',
+        max_length=8192,
+        max_prompt_length=4096,
         remove_unused_columns=False,
         run_name="dpo_llama2",
         gradient_checkpointing_kwargs=dict(use_reentrant=script_args.gradient_checkpointing_use_reentrant),
