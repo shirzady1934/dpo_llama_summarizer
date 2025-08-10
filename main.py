@@ -1,18 +1,19 @@
 import os
+import random
 from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
 from accelerate import Accelerator
 from datasets import Dataset, load_dataset
-from peft import LoraConfig
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser, set_seed
 import pandas as pd
 
 from trl import DPOConfig, DPOTrainer
 
 
-tokenizer = AutoTokenizer.from_pretrained("unsloth/Llama-3.2-3B-Instruct")
+tokenizer = AutoTokenizer.from_pretrained("unsloth/Llama-3.2-1B-Instruct")
 tokenizer.pad_token = tokenizer.eos_token
 
 df = pd.read_csv('generated_summaries_with_variants32.csv')
@@ -21,13 +22,22 @@ prompts = []
 chosens = []
 rejecteds = []
 template_prompts = [
-    'Read the following article and summarize it as if you are writing the lead paragraph for a news report:',
-    'Summarize the following news article into a short and informative paragraph:',
+#    'Read the following article and summarize it as if you are writing the lead paragraph for a news report:',
+#    'Summarize the following news article into a short and informative paragraph:',
     'Write a brief summary (like a news highlight) for the following article. Capture the most important facts:',
-    'From the following news article, extract the key points a reader should know:',
+#    'From the following news article, extract the key points a reader should know:',
 ]
+#template_prompts = [
+#    'Read the following article and summarize it as if you are writing the lead paragraph for a news report:',
+#    'Summarize the following news article into a short and informative paragraph:',
+#    'Write a brief summary (like a news highlight) for the following article. Capture the most important facts:',
+#    'From the following news article, extract the key points a reader should know:',
+#]
+prob = 0
+
 models_list = ['Model 1 (llama-3.1-70b-versatile) Summary', 'Model 2 (gemma-9b-it) Summary', 'Model 3 (mixtral) Summary']
-system_message = {"role": "system", "content": "You are a helpful assistant that summarizes news articles."}
+#system_message = {"role": "system", "content": "You are a helpful assistant that summarizes news articles."}
+system_message = {"role": "system", "content": "You are a helpful assistant that produces concise and accurate summaries of news articles. Focus on preserving key facts and main points while keeping the output short and clear."}
 system = tokenizer.apply_chat_template([system_message], tokenize=False)
 prompt_message = lambda x: {"role": "user", "content": x}
 for i in range(len(df)):
@@ -36,9 +46,10 @@ for i in range(len(df)):
             #prompts.append(system_prm + temp + '\n' + df.loc[i,'Article'] + 'Summary:<|eot_id|>')
             message = prompt_message(temp + '\n' + df.loc[i,'Article'] + 'Summary:\n\n')
             prompt = tokenizer.apply_chat_template([message], tokenize=False, add_generation_prompt=True)
-            prompts.append(system + prompt)
-            chosens.append(df.loc[i,'Reference Summary'])
-            rejecteds.append(df.loc[i,idx])
+            if random.random() > prob:
+                prompts.append(system + prompt)
+                chosens.append(df.loc[i,'Reference Summary'])
+                rejecteds.append(df.loc[i,idx])
 
 
 data = {
@@ -54,7 +65,7 @@ data = {
 
 
 dataset = Dataset.from_dict(data)
-dataset = dataset.train_test_split(0.05)
+dataset = dataset.train_test_split(0.02)
 print(dataset)
 
 
@@ -68,7 +79,7 @@ class ScriptArguments:
     """
 
     # data parameters
-    beta: Optional[float] = field(default=0.1, metadata={"help": "the beta parameter for DPO loss"})
+    beta: Optional[float] = field(default=0.3, metadata={"help": "the beta parameter for DPO loss"})
 
     # training parameters
     model_name_or_path: Optional[str] = field(
@@ -81,7 +92,7 @@ class ScriptArguments:
     weight_decay: Optional[float] = field(default=0.05, metadata={"help": "the weight decay"})
     optimizer_type: Optional[str] = field(default="paged_adamw_32bit", metadata={"help": "the optimizer type"})
 
-    per_device_train_batch_size: Optional[int] = field(default=4, metadata={"help": "train batch size per device"})
+    per_device_train_batch_size: Optional[int] = field(default=6, metadata={"help": "train batch size per device"})
     per_device_eval_batch_size: Optional[int] = field(default=1, metadata={"help": "eval batch size per device"})
     gradient_accumulation_steps: Optional[int] = field(
         default=4, metadata={"help": "the number of gradient accumulation steps"}
@@ -100,16 +111,16 @@ class ScriptArguments:
 
     max_prompt_length: Optional[int] = field(default=8192, metadata={"help": "the maximum prompt length"})
     max_length: Optional[int] = field(default=8192, metadata={"help": "the maximum sequence length"})
-    max_steps: Optional[int] = field(default=10000, metadata={"help": "max number of training steps"})
+    max_steps: Optional[int] = field(default=8000, metadata={"help": "max number of training steps"})
     logging_steps: Optional[int] = field(default=10, metadata={"help": "the logging frequency"})
-    save_steps: Optional[int] = field(default=100, metadata={"help": "the saving frequency"})
-    eval_steps: Optional[int] = field(default=1000, metadata={"help": "the evaluation frequency"})
+    save_steps: Optional[int] = field(default=400, metadata={"help": "the saving frequency"})
+    eval_steps: Optional[int] = field(default=1500, metadata={"help": "the evaluation frequency"})
 
     output_dir: Optional[str] = field(default="./results", metadata={"help": "the output directory"})
     log_freq: Optional[int] = field(default=1, metadata={"help": "the logging frequency"})
     load_in_4bit: Optional[bool] = field(default=True, metadata={"help": "whether to load the model in 4bit"})
     model_dtype: Optional[str] = field(
-        default="float16", metadata={"help": "model_dtype[float16, bfloat16, float] for loading."}
+        default="bfloat16", metadata={"help": "model_dtype[float16, bfloat16, float] for loading."}
     )
 
     # instrumentation
@@ -179,12 +190,30 @@ if __name__ == "__main__":
         torch_dtype = torch.bfloat16
 
     model = AutoModelForCausalLM.from_pretrained(
-        'unsloth/Llama-3.2-3B-Instruct',
+        'unsloth/Llama-3.2-1B-Instruct',
         low_cpu_mem_usage=True,
         torch_dtype=torch_dtype,
         #load_in_4bit=script_args.load_in_4bit,
         device_map={"": Accelerator().local_process_index},
     )
+
+    peft_config = LoraConfig(
+        r=script_args.lora_r,
+        lora_alpha=script_args.lora_alpha,
+        lora_dropout=script_args.lora_dropout,
+        target_modules=[
+            "q_proj",
+            "v_proj",
+            "k_proj",
+            "out_proj",
+            "fc_in",
+            "fc_out",
+            "wte",
+        ],
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+
     model.config.use_cache = False
 
     if script_args.ignore_bias_buffers:
@@ -238,24 +267,25 @@ if __name__ == "__main__":
         run_name="dpo_llama2",
         gradient_checkpointing_kwargs=dict(use_reentrant=script_args.gradient_checkpointing_use_reentrant),
         seed=script_args.seed,
+        max_grad_norm=1
     )
 
-    peft_config = LoraConfig(
-        r=script_args.lora_r,
-        lora_alpha=script_args.lora_alpha,
-        lora_dropout=script_args.lora_dropout,
-        target_modules=[
-            "q_proj",
-            "v_proj",
-            "k_proj",
-            "out_proj",
-            "fc_in",
-            "fc_out",
-            "wte",
-        ],
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     # 5. initialize the DPO trainer
     dpo_trainer = DPOTrainer(
