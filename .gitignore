@@ -5,5 +5,9 @@ Untitled*.ipynb
 wandb*
 dpo*/
 sampled_dataset_test/
+*.json
+Llama3.2-*/
+*.csv
+*.log
+pegasus_cnn_dailymail_summaries/
 sampled_dataset_test/
-*_summaries.json
