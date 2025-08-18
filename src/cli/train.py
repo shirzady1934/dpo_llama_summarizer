@@ -13,62 +13,6 @@ import pandas as pd
 from trl import DPOConfig, DPOTrainer
 
 
-tokenizer = AutoTokenizer.from_pretrained("unsloth/Llama-3.2-1B-Instruct")
-tokenizer.pad_token = tokenizer.eos_token
-
-df = pd.read_csv('generated_summaries_with_variants32.csv')
-
-prompts = []
-chosens = []
-rejecteds = []
-template_prompts = [
-#    'Read the following article and summarize it as if you are writing the lead paragraph for a news report:',
-#    'Summarize the following news article into a short and informative paragraph:',
-    'Write a brief summary (like a news highlight) for the following article. Capture the most important facts:',
-#    'From the following news article, extract the key points a reader should know:',
-]
-#template_prompts = [
-#    'Read the following article and summarize it as if you are writing the lead paragraph for a news report:',
-#    'Summarize the following news article into a short and informative paragraph:',
-#    'Write a brief summary (like a news highlight) for the following article. Capture the most important facts:',
-#    'From the following news article, extract the key points a reader should know:',
-#]
-prob = 0
-
-models_list = ['Model 1 (llama-3.1-70b-versatile) Summary', 'Model 2 (gemma-9b-it) Summary', 'Model 3 (mixtral) Summary']
-#system_message = {"role": "system", "content": "You are a helpful assistant that summarizes news articles."}
-system_message = {"role": "system", "content": "You are a helpful assistant that produces concise and accurate summaries of news articles. Focus on preserving key facts and main points while keeping the output short and clear."}
-system = tokenizer.apply_chat_template([system_message], tokenize=False)
-prompt_message = lambda x: {"role": "user", "content": x}
-for i in range(len(df)):
-    for idx in models_list:
-        for temp in template_prompts:
-            #prompts.append(system_prm + temp + '\n' + df.loc[i,'Article'] + 'Summary:<|eot_id|>')
-            message = prompt_message(temp + '\n' + df.loc[i,'Article'] + 'Summary:\n\n')
-            prompt = tokenizer.apply_chat_template([message], tokenize=False, add_generation_prompt=True)
-            if random.random() > prob:
-                prompts.append(system + prompt)
-                chosens.append(df.loc[i,'Reference Summary'])
-                rejecteds.append(df.loc[i,idx])
-
-
-data = {
-        "prompt": prompts,
-        "chosen": chosens,
-        "rejected": rejecteds,
-}
-#data = {
-#        "prompt": prompts[:100],
-#        "chosen": chosens[:100],
-#        "rejected": rejecteds[:100],
-#}
-
-
-dataset = Dataset.from_dict(data)
-dataset = dataset.train_test_split(0.02)
-print(dataset)
-
-
 
 
 # Define and parse arguments.
@@ -83,9 +27,16 @@ class ScriptArguments:
 
     # training parameters
     model_name_or_path: Optional[str] = field(
-        default="../sft/results/final_checkpoint",
+        default="../results/final_checkpoint",
         metadata={"help": "the location of the SFT model name or path"},
     )
+    dataset_path: Optional[str] = field(
+        default="../../data/processed/generated_summaries_with_variants32.csv",
+        metadata={"help": "the path of dataset"},
+    )
+
+    prob : Optional[float] = field(default=0.5, metadata={"help": "probability of multipromting selectioin"})
+
     learning_rate: Optional[float] = field(default=1e-6, metadata={"help": "optimizer learning rate"})
     lr_scheduler_type: Optional[str] = field(default="cosine", metadata={"help": "the lr scheduler type"})
     warmup_steps: Optional[int] = field(default=100, metadata={"help": "the number of warmup steps"})
@@ -175,10 +126,58 @@ def get_stack_exchange_paired(
     else:
         return dataset['test']
 
+def preprocess_ds(script_args, tokenizer):
+    df = pd.read_csv(script_args.dataset_path)
+
+    prompts = []
+    chosens = []
+    rejecteds = []
+    template_prompts = [
+        'Read the following article and summarize it as if you are writing the lead paragraph for a news report:',
+        'Summarize the following news article into a short and informative paragraph:',
+        'Write a brief summary (like a news highlight) for the following article. Capture the most important facts:',
+        'From the following news article, extract the key points a reader should know:',
+    ]
+    prob = script_args.prob
+
+    models_list = ['Model 1 (llama-3.1-70b-versatile) Summary', 'Model 2 (gemma-9b-it) Summary', 'Model 3 (mixtral) Summary']
+    system_message = {"role": "system", "content": "You are a helpful assistant that produces concise and accurate summaries of news articles. Focus on preserving key facts and main points while keeping the output short and clear."}
+    system = tokenizer.apply_chat_template([system_message], tokenize=False)
+    prompt_message = lambda x: {"role": "user", "content": x}
+    for i in range(len(df)):
+        for idx in models_list:
+            for temp in template_prompts:
+                #prompts.append(system_prm + temp + '\n' + df.loc[i,'Article'] + 'Summary:<|eot_id|>')
+                message = prompt_message(temp + '\n' + df.loc[i,'Article'] + 'Summary:\n\n')
+                prompt = tokenizer.apply_chat_template([message], tokenize=False, add_generation_prompt=True)
+                if random.random() > prob:
+                    prompts.append(system + prompt)
+                    chosens.append(df.loc[i,'Reference Summary'])
+                    rejecteds.append(df.loc[i,idx])
+
+
+    data = {
+            "prompt": prompts,
+            "chosen": chosens,
+            "rejected": rejecteds,
+    }
+
+
+    dataset = Dataset.from_dict(data)
+    dataset = dataset.train_test_split(0.02)
+    return dataset
+
+
+
 
 if __name__ == "__main__":
     parser = HfArgumentParser(ScriptArguments)
     script_args = parser.parse_args_into_dataclasses()[0]
+
+    tokenizer = AutoTokenizer.from_pretrained(script_args.model_name_or_path)
+    tokenizer.pad_token = tokenizer.eos_token
+    global dataset
+    dataset = preprocess_ds(script_args, tokenizer)
 
     set_seed(script_args.seed)
 
@@ -190,7 +189,7 @@ if __name__ == "__main__":
         torch_dtype = torch.bfloat16
 
     model = AutoModelForCausalLM.from_pretrained(
-        'unsloth/Llama-3.2-1B-Instruct',
+        script_args.model_name_or_path,
         low_cpu_mem_usage=True,
         torch_dtype=torch_dtype,
         #load_in_4bit=script_args.load_in_4bit,
