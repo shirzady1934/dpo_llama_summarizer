@@ -1,13 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+
+# Data / artifacts
+data/raw/*
+data/processed/*
+!data/raw/.keep
+!data/processed/.keep
+results/**
+models/**
+runs/**
+
+# Notebooks
 .ipynb_checkpoints/
-Untitled.ipynb
-generated_summaries_with_variants32.csv
-Untitled*.ipynb
-wandb*
-dpo*/
-sampled_dataset_test/
-*.json
-Llama3.2-*/
-*.csv
-*.log
-pegasus_cnn_dailymail_summaries/
-sampled_dataset_test/
+.gitattributes
+*.swp
+
+
