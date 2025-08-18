@@ -1,4 +1,4 @@
-i# DPO LLaMA Summarizer
+# DPO LLaMA Summarizer
 
 Direct Preference Optimization (DPO) pipeline for training LLaMA models to generate concise abstractive summaries.
 
@@ -14,8 +14,10 @@ pip install -r requirements.txt
 ```
 
 # train
+```bash
 ./scripts/run.sh
-
+```
 # inference
+```bash
 python -m src.cli.infer --model-checkpoint models/example_ckpt --input examples/sample.txt
-
+```
